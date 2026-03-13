@@ -1,64 +1,28 @@
-import { useState, useRef } from 'react';
+import { useRef } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import './App.css';
 import LandingPage from './components/LandingPage';
-import NicknameModal from './components/NicknameModal';
 import RoomPage from './components/RoomPage';
 
 function App() {
-  const [page, setPage] = useState('landing');
-  const [roomId, setRoomId] = useState('');
-  const [nickname, setNickname] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
-  const userIdRef = useRef(`user-${Math.random().toString(36).slice(2, 8)}`);
-
-  const generateRoomId = () => Math.random().toString(36).slice(2, 8);
-
-  const handleCreateRoom = () => {
-    setRoomId(generateRoomId());
-    setIsCreating(true);
-    setPage('nickname');
-  };
-
-  const handleJoinRoom = (id) => {
-    setRoomId(id);
-    setIsCreating(false);
-    setPage('nickname');
-  };
-
-  const handleNicknameSubmit = (name) => {
-    setNickname(name);
-    setPage('room');
-  };
-
-  const handleLeaveRoom = () => {
-    setPage('landing');
-    setRoomId('');
-    setNickname('');
-  };
-
-  if (page === 'room' && roomId && nickname) {
-    return (
-      <RoomPage
-        roomId={roomId}
-        nickname={nickname}
-        userId={userIdRef.current}
-        onLeave={handleLeaveRoom}
-      />
-    );
-  }
+  const userIdRef = useRef(
+    sessionStorage.getItem('codesync_userId') ||
+    (() => {
+      const id = `user-${Math.random().toString(36).slice(2, 8)}`;
+      sessionStorage.setItem('codesync_userId', id);
+      return id;
+    })()
+  );
 
   return (
-    <div className="app-container">
-      <LandingPage onCreateRoom={handleCreateRoom} onJoinRoom={handleJoinRoom} />
-      {page === 'nickname' && (
-        <NicknameModal
-          roomId={roomId}
-          isCreating={isCreating}
-          onSubmit={handleNicknameSubmit}
-          onClose={() => setPage('landing')}
-        />
-      )}
-    </div>
+    <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route
+        path="/room/:roomId"
+        element={<RoomPage userId={userIdRef.current} />}
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 

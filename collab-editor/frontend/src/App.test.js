@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import App from './App';
 
 jest.mock('@monaco-editor/react', () => (props) => {
@@ -22,17 +23,34 @@ jest.mock('./socket', () => ({
   },
 }));
 
+// Mock fetch globally for tests
+global.fetch = jest.fn(() =>
+  Promise.resolve({
+    ok: true,
+    status: 201,
+    json: () => Promise.resolve({ roomId: 'testroom', hasPassword: false }),
+  })
+);
+
+const renderApp = (initialPath = '/') =>
+  render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <App />
+    </MemoryRouter>
+  );
+
 test('renders CodeSync landing page', () => {
-  render(<App />);
+  renderApp('/');
   expect(screen.getAllByText(/CodeSync/).length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText(/Code together/i)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /create room/i })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /join room/i })).toBeInTheDocument();
 });
 
-test('shows nickname modal on Create Room click', () => {
-  render(<App />);
+test('shows create room form on Create Room click', () => {
+  renderApp('/');
   fireEvent.click(screen.getByRole('button', { name: /create room/i }));
-  expect(screen.getByText(/create a new room/i)).toBeInTheDocument();
-  expect(screen.getByPlaceholderText(/devmaster/i)).toBeInTheDocument();
+  // After clicking Create Room, the form shows password and custom ID checkbox
+  expect(screen.getByText(/Custom Room ID/i)).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(/Room password \(optional\)/i)).toBeInTheDocument();
 });
