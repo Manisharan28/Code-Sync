@@ -110,13 +110,14 @@ def user_list(room_data: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 EXEC_TIMEOUT = 30  # seconds
 
+import shutil
+
 def _run_code_subprocess(code: str, language: str, sid: str):
     """Run code in a subprocess, stream output back via socket, accept stdin."""
     ext_map = {"python": ".py", "javascript": ".js", "cpp": ".cpp", "java": ".java"}
     ext = ext_map.get(language, ".py")
 
     run_id = uuid.uuid4().hex[:8]
-    # Use cross-platform temp files
     temp_dir = tempfile.gettempdir()
     code_path = os.path.join(temp_dir, f"cs_{run_id}_code{ext}")
     out_path = None
@@ -127,57 +128,90 @@ def _run_code_subprocess(code: str, language: str, sid: str):
     try:
         # --- Compilation step for C++ ---
         if language == "cpp":
-            out_path = os.path.join(temp_dir, f"cs_{run_id}_out" + (".exe" if os.name == "nt" else ""))
-            # NOTE: g++ must be installed and on PATH.
-            # On Windows install MinGW-w64; on Linux: sudo apt install g++
-            comp = subprocess.run(
-                ["g++", code_path, "-o", out_path],
-                capture_output=True, text=True, timeout=15, check=False,
-            )
-            if comp.returncode != 0:
+            if not shutil.which("g++"):
                 socketio.emit("terminal_output", {
-                    "output": f"Compilation Error:\n{comp.stderr}",
+                    "output": "Error: g++ not found. Install MinGW-w64 (Windows) or gcc (Linux/Mac).\n",
+                    "done": True, "returncode": 1,
+                }, to=sid)
+                return
+            out_path = os.path.join(temp_dir, f"cs_{run_id}_out" + (".exe" if os.name == "nt" else ""))
+            comp = subprocess.run(
+                ["g++", "-o", out_path, code_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                check=False,
+            )
+            comp_stderr = comp.stderr.decode("utf-8", errors="replace")
+            comp_stdout = comp.stdout.decode("utf-8", errors="replace")
+            if comp.returncode != 0:
+                error_out = comp_stderr or comp_stdout or "Unknown compilation error"
+                socketio.emit("terminal_output", {
+                    "output": f"[Compilation Error]\n{error_out}\n",
                     "done": True, "returncode": comp.returncode,
                 }, to=sid)
                 return
+            # Show any warnings
+            if comp_stderr.strip():
+                socketio.emit("terminal_output", {
+                    "output": f"[Compiler Warnings]\n{comp_stderr}\n",
+                    "done": False,
+                }, to=sid)
             cmd = [out_path]
         elif language == "python":
             cmd = [sys.executable, "-u", code_path]
         elif language == "javascript":
+            if not shutil.which("node"):
+                socketio.emit("terminal_output", {
+                    "output": "Error: node not found on PATH.\n",
+                    "done": True, "returncode": 1,
+                }, to=sid)
+                return
             cmd = ["node", code_path]
         elif language == "java":
             cmd = ["java", code_path]
         else:
             cmd = [sys.executable, "-u", code_path]
 
-        # Spawn process with pipes for stdin/stdout/stderr
+        # Spawn process
+        # Use bufsize=0 (unbuffered bytes) + explicit encoding for cross-language stdin support
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            bufsize=0,          # unbuffered — critical for interactive I/O
         )
 
         # Store process so terminal_input can write to it
-        active_processes[sid] = {"proc": proc, "code_path": code_path, "out_path": out_path}
+        active_processes[sid] = {
+            "proc": proc,
+            "code_path": code_path,
+            "out_path": out_path,
+        }
 
-        # Reader threads to stream output
-        def read_stream(stream, label=""):
+        # Reader threads — read raw bytes line by line
+        def read_stream(stream, is_stderr=False):
             try:
-                for line in iter(stream.readline, ""):
-                    if line:
-                        socketio.emit("terminal_output", {
-                            "output": (f"[{label}] " if label == "stderr" else "") + line,
-                            "done": False,
-                        }, to=sid)
-                stream.close()
+                while True:
+                    line = stream.readline()
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="replace")
+                    socketio.emit("terminal_output", {
+                        "output": ("[stderr] " if is_stderr else "") + text,
+                        "done": False,
+                    }, to=sid)
             except Exception:
                 pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
-        t_out = threading.Thread(target=read_stream, args=(proc.stdout,), daemon=True)
-        t_err = threading.Thread(target=read_stream, args=(proc.stderr, "stderr"), daemon=True)
+        t_out = threading.Thread(target=read_stream, args=(proc.stdout, False), daemon=True)
+        t_err = threading.Thread(target=read_stream, args=(proc.stderr, True), daemon=True)
         t_out.start()
         t_err.start()
 
@@ -185,14 +219,18 @@ def _run_code_subprocess(code: str, language: str, sid: str):
             proc.wait(timeout=EXEC_TIMEOUT)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
             socketio.emit("terminal_output", {
                 "output": f"\nExecution timed out ({EXEC_TIMEOUT}s limit).\n",
                 "done": True, "returncode": 124,
             }, to=sid)
             return
 
-        t_out.join(timeout=2)
-        t_err.join(timeout=2)
+        t_out.join(timeout=3)
+        t_err.join(timeout=3)
 
         socketio.emit("terminal_output", {
             "output": "",
@@ -574,16 +612,21 @@ def handle_run_code(data):
 
 @socketio.on("terminal_input")
 def handle_terminal_input(data):
-    """Write stdin to the active process for this session."""
+    """Write stdin bytes to the active process for this session."""
     sid = request.sid
     text = data.get("text", "")
+    if not text:
+        return
     proc_info = active_processes.get(sid)
-    if proc_info and proc_info.get("proc") and proc_info["proc"].stdin:
-        try:
-            proc_info["proc"].stdin.write(text)
-            proc_info["proc"].stdin.flush()
-        except (BrokenPipeError, OSError):
-            pass
+    if proc_info and proc_info.get("proc"):
+        proc = proc_info["proc"]
+        if proc.stdin and proc.poll() is None:  # process still running
+            try:
+                # Write as bytes (proc uses bufsize=0 binary mode)
+                proc.stdin.write(text.encode("utf-8"))
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
 
 
 # ---------------------------------------------------------------------------

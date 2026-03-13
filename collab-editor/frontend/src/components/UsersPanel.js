@@ -16,7 +16,7 @@ function UsersPanel({ users, currentUserId, onCameraToggle, onMicToggle, onLocal
             onCameraToggle={onCameraToggle}
             onMicToggle={onMicToggle}
             onLocalStream={onLocalStream}
-            remoteStream={remoteStreams?.[user.sessionId] || null}
+            remoteStream={remoteStreams?.[user.userId] || null}
           />
         ))}
       </div>

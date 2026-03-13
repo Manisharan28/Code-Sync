@@ -68,8 +68,9 @@ function RoomPage({ userId }) {
   const hasJoinedRef = useRef(false);
   const peerConnectionsRef = useRef({});  // sid → RTCPeerConnection
   const localStreamRef = useRef(null);
-  const remoteStreamsRef = useRef({});     // sid → MediaStream
-  const [remoteStreams, setRemoteStreams] = useState({}); // for re-renders
+  const remoteStreamsRef = useRef({});     // userId → MediaStream
+  const sidToUserIdRef = useRef({});       // socketSid → userId (for WebRTC stream lookup)
+  const [remoteStreams, setRemoteStreams] = useState({}); // userId → MediaStream, for re-renders
 
   /* ---- resizable panel sizes ---- */
   const [terminalHeight, setTerminalHeight] = useState(220);
@@ -97,8 +98,10 @@ function RoomPage({ userId }) {
     pc.ontrack = (e) => {
       const stream = e.streams[0];
       if (stream) {
-        remoteStreamsRef.current[remoteSid] = stream;
-        setRemoteStreams(prev => ({ ...prev, [remoteSid]: stream }));
+        // Key by userId so UsersPanel can look up by user.userId
+        const remoteUserId = sidToUserIdRef.current[remoteSid] || remoteSid;
+        remoteStreamsRef.current[remoteUserId] = stream;
+        setRemoteStreams(prev => ({ ...prev, [remoteUserId]: stream }));
       }
     };
 
@@ -132,10 +135,12 @@ function RoomPage({ userId }) {
       pc.close();
       delete peerConnectionsRef.current[remoteSid];
     }
-    delete remoteStreamsRef.current[remoteSid];
+    const remoteUserId = sidToUserIdRef.current[remoteSid] || remoteSid;
+    delete sidToUserIdRef.current[remoteSid];
+    delete remoteStreamsRef.current[remoteUserId];
     setRemoteStreams(prev => {
       const next = { ...prev };
-      delete next[remoteSid];
+      delete next[remoteUserId];
       return next;
     });
   }, []);
@@ -212,9 +217,10 @@ function RoomPage({ userId }) {
     };
 
     const handleFileDeleted = (data) => {
+      // Use server's authoritative file list to rebuild state
       setFiles(prev => {
-        const next = { ...prev };
-        delete next[data.filename];
+        const next = {};
+        (data.files || []).forEach(f => { next[f] = prev[f] ?? ''; });
         return next;
       });
       setActiveFile(data.activeFile);
@@ -234,6 +240,10 @@ function RoomPage({ userId }) {
 
     /* WebRTC signaling handlers */
     const handleWebrtcOffer = async (data) => {
+      // Map socket sid → userId so ontrack can key remoteStreams by userId
+      if (data.fromUserId) {
+        sidToUserIdRef.current[data.fromSid] = data.fromUserId;
+      }
       const pc = createPeerConnection(data.fromSid);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
@@ -339,24 +349,12 @@ function RoomPage({ userId }) {
     socket.emit('language_change', { room: roomId, language: lang });
   };
 
-  const handleRunCode = async () => {
+  const handleRunCode = () => {
+    // Route through socket so the process is interactive (stdin works)
+    const code = files[activeFile] || '';
     setIsRunning(true);
     setTerminalLines(prev => [...prev, { type: 'status', text: '$ Running...' }]);
-    const code = files[activeFile] || '';
-    try {
-      const res = await fetch(`${BACKEND_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, language }),
-      });
-      const data = await res.json();
-      const out = [data.stdout, data.stderr].filter(Boolean).join('\n') || 'Program completed with no output.';
-      setTerminalLines(prev => [...prev, { type: 'output', text: out }]);
-    } catch (err) {
-      setTerminalLines(prev => [...prev, { type: 'output', text: `Error: ${err.message}` }]);
-    } finally {
-      setIsRunning(false);
-    }
+    socket.emit('run_code', { room: roomId, code, language });
   };
 
   const handleRunCommand = (code) => {
@@ -366,6 +364,10 @@ function RoomPage({ userId }) {
   };
 
   const handleTerminalInput = (text) => {
+    // Echo the input into terminal lines so user sees what they typed
+    if (text && text !== '\x03') {
+      setTerminalLines(prev => [...prev, { type: 'input', text }]);
+    }
     socket.emit('terminal_input', { text: text + '\n' });
   };
 
@@ -392,10 +394,14 @@ function RoomPage({ userId }) {
   };
 
   const handleCameraToggle = (enabled) => {
+    // Bug 1 fix: update local users state immediately (backend uses include_self=False)
+    setUsers(prev => prev.map(u => u.userId === userId ? { ...u, cameraEnabled: enabled } : u));
     socket.emit('camera_toggle', { room: roomId, userId, enabled });
   };
 
   const handleMicToggle = (enabled) => {
+    // Bug 1 fix: update local users state immediately (backend uses include_self=False)
+    setUsers(prev => prev.map(u => u.userId === userId ? { ...u, micEnabled: enabled } : u));
     socket.emit('mic_toggle', { room: roomId, userId, enabled });
   };
 

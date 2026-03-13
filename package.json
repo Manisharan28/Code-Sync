@@ -3,9 +3,9 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -k -n backend,frontend \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "C:/Users/pende/AppData/Local/Programs/Python/Python312/python.exe collab-editor/backend/app.py",
+    "dev:backend": "collab-editor/backend/venv/Scripts/python.exe collab-editor/backend/app.py",
     "dev:frontend": "npm --prefix collab-editor/frontend start",
-    "install:backend": "C:/Users/pende/AppData/Local/Programs/Python/Python312/python.exe -m pip install -r collab-editor/backend/requirements.txt",
+    "install:backend": "collab-editor/backend/venv/Scripts/pip.exe install -r collab-editor/backend/requirements.txt",
     "install:frontend": "npm --prefix collab-editor/frontend install"
   },
   "devDependencies": {

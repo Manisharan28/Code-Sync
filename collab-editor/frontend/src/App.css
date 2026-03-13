@@ -293,7 +293,8 @@
 }
 .terminal-clear-btn:hover { color: var(--text); background: var(--border); }
 
-.terminal-body { flex: 1; overflow: auto; padding: .5rem .85rem; background: var(--bg-overlay); }
+.terminal-body { flex: 1; overflow: auto; padding: .5rem .85rem; background: var(--bg-overlay); outline: none; cursor: text; }
+.terminal-body-focused { box-shadow: inset 0 0 0 1px var(--blue); }
 .terminal-body pre, .terminal-placeholder, .terminal-line, .terminal-running {
   margin: 0; font-family: 'JetBrains Mono', monospace;
   font-size: .82rem; line-height: 1.6; white-space: pre-wrap;
@@ -308,30 +309,12 @@
 .ellipsis-anim::after { content: ''; animation: ellipsis 1.2s steps(4, end) infinite; }
 @keyframes ellipsis { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
 
-/* Terminal input row (#4) */
-.terminal-input-form {
-  display: flex; align-items: center; gap: .4rem;
-  padding: .4rem .75rem; border-top: 1px solid var(--border);
-  background: var(--bg-surface); flex-shrink: 0;
-}
-.terminal-prompt-label {
-  color: var(--blue); font-family: 'JetBrains Mono', monospace;
-  font-size: .85rem; font-weight: 700; flex-shrink: 0;
-}
-.terminal-input-form .terminal-input {
-  flex: 1; background: transparent; border: 0; outline: none;
-  color: var(--text); font-family: 'JetBrains Mono', monospace;
-  font-size: .82rem; caret-color: var(--blue);
-}
-.terminal-input-form .terminal-input::placeholder { color: var(--text-muted); }
-.terminal-run-btn {
-  display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: var(--radius);
-  background: var(--green); color: var(--bg-overlay); border: 0;
-  cursor: pointer; transition: filter .12s; flex-shrink: 0;
-}
-.terminal-run-btn:hover { filter: brightness(1.1); }
-.terminal-run-btn:disabled { opacity: .4; cursor: not-allowed; }
+/* Inline terminal input line */
+.terminal-input-inline { color: var(--text); display: block; }
+.terminal-cursor { color: var(--blue); font-weight: 900; }
+.terminal-cursor-blink { animation: cursor-blink .8s step-end infinite; }
+@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.terminal-hint { font-size: .7rem; color: var(--text-muted); font-style: italic; flex: 1; margin-left: .3rem; }
 
 /* ==================== USERS PANEL ==================== */
 .users-panel { border-bottom: 1px solid var(--border); overflow-y: auto; }
