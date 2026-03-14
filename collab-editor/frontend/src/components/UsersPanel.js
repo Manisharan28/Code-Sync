@@ -1,12 +1,45 @@
+/*
+  UsersPanel — User list with WebRTC camera/mic, role badges, and admin controls.
+
+  WebRTC FIXES:
+  - Mic toggle uses track.enabled instead of track.stop()
+  - All video elements: srcObject + autoplay + playsinline + muted (local) + .play().catch()
+  - Console.log at every WebRTC lifecycle step
+  - Visible error message for getUserMedia denial
+*/
 import { useState, useEffect, useRef } from 'react';
 
-function UsersPanel({ users, currentUserId, onCameraToggle, onMicToggle, onLocalStream, remoteStreams, height }) {
+const ROLE_DISPLAY = {
+  admin: { emoji: '👑', label: 'Admin', color: '#FFD700' },
+  deputy_admin: { emoji: '⭐', label: 'Deputy Admin', color: '#C0C0C0' },
+  editor: { emoji: '✏️', label: 'Editor', color: '#4A90D9' },
+  reviewer: { emoji: '🔍', label: 'Reviewer', color: '#9B59B6' },
+  viewer: { emoji: '👁️', label: 'Viewer', color: '#808080' },
+};
+
+function UsersPanel({
+  users, currentUserId, onCameraToggle, onMicToggle, onLocalStream,
+  remoteStreams, height, myRole, onChangeRole, onKickUser,
+}) {
+  const currentUser = users.find(u => u.userId === currentUserId);
+
   return (
     <div className="users-panel" style={height ? { height, flexShrink: 0 } : undefined}>
       <div className="panel-header">
         <h3>Active Users</h3>
         <span className="badge">{users.length}</span>
       </div>
+
+      {/* Current user role badge */}
+      {currentUser && currentUser.role && (
+        <div className="my-role-badge" style={{ borderColor: ROLE_DISPLAY[currentUser.role]?.color || '#808080' }}>
+          <span>{ROLE_DISPLAY[currentUser.role]?.emoji}</span>
+          <span style={{ color: ROLE_DISPLAY[currentUser.role]?.color }}>
+            Your Role: {ROLE_DISPLAY[currentUser.role]?.label || currentUser.role}
+          </span>
+        </div>
+      )}
+
       <div className="users-list">
         {users.map(user => (
           <UserCard
@@ -17,6 +50,9 @@ function UsersPanel({ users, currentUserId, onCameraToggle, onMicToggle, onLocal
             onMicToggle={onMicToggle}
             onLocalStream={onLocalStream}
             remoteStream={remoteStreams?.[user.userId] || null}
+            myRole={myRole}
+            onChangeRole={onChangeRole}
+            onKickUser={onKickUser}
           />
         ))}
       </div>
@@ -24,10 +60,14 @@ function UsersPanel({ users, currentUserId, onCameraToggle, onMicToggle, onLocal
   );
 }
 
-function UserCard({ user, isCurrentUser, onCameraToggle, onMicToggle, onLocalStream, remoteStream }) {
+function UserCard({
+  user, isCurrentUser, onCameraToggle, onMicToggle, onLocalStream,
+  remoteStream, myRole, onChangeRole, onKickUser,
+}) {
   const [micOn, setMicOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
   const [permError, setPermError] = useState('');
+  const [showRoleMenu, setShowRoleMenu] = useState(false);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const streamRef = useRef(null);
@@ -43,61 +83,102 @@ function UserCard({ user, isCurrentUser, onCameraToggle, onMicToggle, onLocalStr
   // Attach remote stream to video element
   useEffect(() => {
     if (!isCurrentUser && remoteVideoRef.current && remoteStream) {
+      console.log('[WebRTC] Attaching remote stream for', user.nickname);
       remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch(() => {});
+      remoteVideoRef.current.play().catch(e => console.error('[WebRTC] Remote video play error:', e));
     }
-  }, [remoteStream, isCurrentUser]);
+  }, [remoteStream, isCurrentUser, user.nickname]);
 
-  // Only current user can toggle their OWN camera
+  // Camera toggle — FIX: use track.enabled, not track.stop() for restart
   const handleCamToggle = async () => {
     setPermError('');
     if (camOn) {
+      // Turn off camera: disable track, don't stop() it
       if (streamRef.current) {
-        streamRef.current.getVideoTracks().forEach(t => t.stop());
-        // Keep audio if mic is on
-        if (!micOn) {
-          streamRef.current.getTracks().forEach(t => t.stop());
-          streamRef.current = null;
-        }
+        streamRef.current.getVideoTracks().forEach(t => {
+          console.log('[WebRTC] Disabling video track');
+          t.enabled = false;
+        });
       }
       if (localVideoRef.current) localVideoRef.current.srcObject = null;
       setCamOn(false);
       onCameraToggle && onCameraToggle(false);
     } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: micOn });
+        console.log('[WebRTC] Requesting getUserMedia for camera...');
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        console.log('[WebRTC] getUserMedia success, tracks:', stream.getTracks().map(t => `${t.kind}:${t.readyState}`));
         streamRef.current = stream;
+
+        // If mic was off, disable audio track
+        if (!micOn) {
+          stream.getAudioTracks().forEach(t => { t.enabled = false; });
+        }
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          localVideoRef.current.play().catch(() => {});
+          localVideoRef.current.play().catch(e => console.error('[WebRTC] Local video play error:', e));
         }
         setCamOn(true);
         onCameraToggle && onCameraToggle(true);
         onLocalStream && onLocalStream(stream);
       } catch (err) {
-        setPermError(err.name === 'NotAllowedError' ? 'Camera permission denied.' : 'Camera not available.');
+        console.error('[WebRTC] getUserMedia error:', err);
+        if (err.name === 'NotAllowedError') {
+          setPermError('Camera/mic permission denied. Please allow access in browser settings.');
+        } else {
+          setPermError('Camera not available. Check device connections.');
+        }
       }
     }
   };
 
-  // Only current user can toggle their OWN mic
+  // Mic toggle — FIX: use track.enabled = true/false, NOT track.stop()
   const handleMicToggle = async () => {
     setPermError('');
     if (micOn) {
+      // Turn off mic: just disable the track, don't stop it
       if (streamRef.current) {
-        streamRef.current.getAudioTracks().forEach(t => t.stop());
+        streamRef.current.getAudioTracks().forEach(t => {
+          console.log('[WebRTC] Disabling audio track (mute)');
+          t.enabled = false;
+        });
       }
       setMicOn(false);
       onMicToggle && onMicToggle(false);
     } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: camOn });
-        streamRef.current = stream;
+      // Turn on mic: if we already have a stream, just enable audio track
+      if (streamRef.current && streamRef.current.getAudioTracks().length > 0) {
+        streamRef.current.getAudioTracks().forEach(t => {
+          console.log('[WebRTC] Enabling audio track (unmute)');
+          t.enabled = true;
+        });
         setMicOn(true);
         onMicToggle && onMicToggle(true);
-        onLocalStream && onLocalStream(stream);
-      } catch (err) {
-        setPermError(err.name === 'NotAllowedError' ? 'Microphone permission denied.' : 'Microphone not available.');
+      } else {
+        // Need to get new stream with audio
+        try {
+          console.log('[WebRTC] Requesting getUserMedia for mic...');
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: camOn });
+          console.log('[WebRTC] getUserMedia (mic) success');
+          streamRef.current = stream;
+
+          // If camera was off, disable video track
+          if (!camOn) {
+            stream.getVideoTracks().forEach(t => { t.enabled = false; });
+          }
+
+          setMicOn(true);
+          onMicToggle && onMicToggle(true);
+          onLocalStream && onLocalStream(stream);
+        } catch (err) {
+          console.error('[WebRTC] getUserMedia (mic) error:', err);
+          if (err.name === 'NotAllowedError') {
+            setPermError('Camera/mic permission denied. Please allow access in browser settings.');
+          } else {
+            setPermError('Microphone not available.');
+          }
+        }
       }
     }
   };
@@ -111,6 +192,7 @@ function UserCard({ user, isCurrentUser, onCameraToggle, onMicToggle, onLocalStr
   }, []);
 
   const initials = user.nickname.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+  const roleInfo = ROLE_DISPLAY[user.role] || ROLE_DISPLAY.viewer;
 
   return (
     <div className={`user-card ${isCurrentUser ? 'user-card-self' : ''}`}>
@@ -120,9 +202,12 @@ function UserCard({ user, isCurrentUser, onCameraToggle, onMicToggle, onLocalStr
           {user.nickname}
           {isCurrentUser && <span className="you-badge">You</span>}
         </span>
-        <span className="user-status" style={{ color: user.cursorColor }}>● Active</span>
+        <span className="user-role-badge" style={{ color: roleInfo.color }}>
+          {roleInfo.emoji} {roleInfo.label}
+        </span>
       </div>
-      {/* Only show controls for the current user's OWN media */}
+
+      {/* Media controls */}
       <div className="user-controls">
         {isCurrentUser ? (
           <>
@@ -137,6 +222,43 @@ function UserCard({ user, isCurrentUser, onCameraToggle, onMicToggle, onLocalStr
           <div className="user-media-status">
             {user.micEnabled && <span className="media-indicator" title="Mic on">🎤</span>}
             {user.cameraEnabled && <span className="media-indicator" title="Camera on">📷</span>}
+          </div>
+        )}
+
+        {/* Admin controls: role change and kick */}
+        {!isCurrentUser && myRole === 'admin' && (
+          <div className="admin-controls">
+            <button
+              className="icon-btn"
+              title="Change role"
+              onClick={() => setShowRoleMenu(!showRoleMenu)}
+            >
+              ⚙️
+            </button>
+            <button
+              className="icon-btn kick-btn"
+              title="Kick user"
+              onClick={() => onKickUser && onKickUser(user.dbUserId)}
+            >
+              ❌
+            </button>
+
+            {showRoleMenu && (
+              <div className="role-dropdown">
+                {['deputy_admin', 'editor', 'reviewer', 'viewer'].map(r => (
+                  <button
+                    key={r}
+                    className={`role-option ${user.role === r ? 'active' : ''}`}
+                    onClick={() => {
+                      onChangeRole && onChangeRole(user.dbUserId, r);
+                      setShowRoleMenu(false);
+                    }}
+                  >
+                    {ROLE_DISPLAY[r].emoji} {ROLE_DISPLAY[r].label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -33,7 +33,7 @@ function displayName(filename) {
   return idx > 0 ? filename.substring(0, idx) : filename;
 }
 
-function FilesSidebar({ files, activeFile, onSwitch, onCreate, onDelete }) {
+function FilesSidebar({ files, activeFile, onSwitch, onCreate, onDelete, readOnly }) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [error, setError] = useState('');
@@ -65,11 +65,13 @@ function FilesSidebar({ files, activeFile, onSwitch, onCreate, onDelete }) {
     <div className="files-sidebar">
       <div className="files-header">
         <span className="files-title">Files</span>
-        <button className="icon-btn" title="New file" onClick={() => { setCreating(true); setError(''); }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="13" height="13">
-            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
+        {!readOnly && (
+          <button className="icon-btn" title="New file" onClick={() => { setCreating(true); setError(''); }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="13" height="13">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <div className="files-list">
@@ -89,13 +91,15 @@ function FilesSidebar({ files, activeFile, onSwitch, onCreate, onDelete }) {
               )}
               <span className="file-name">{displayName(f)}</span>
               {/* Delete button */}
-              <span
-                className="file-delete-btn"
-                title={`Delete ${f}`}
-                onClick={(e) => handleDelete(f, e)}
-              >
-                ✕
-              </span>
+              {!readOnly && (
+                <span
+                  className="file-delete-btn"
+                  title={`Delete ${f}`}
+                  onClick={(e) => handleDelete(f, e)}
+                >
+                  ✕
+                </span>
+              )}
             </button>
           );
         })}

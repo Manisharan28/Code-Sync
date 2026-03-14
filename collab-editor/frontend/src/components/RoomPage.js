@@ -1,16 +1,10 @@
 /*
-  RoomPage — Main room view with WebRTC, terminal I/O, resizable panels, file delete,
-  session_id dedup, and duplicate notification fix.
-
-  Socket.IO events used (client→server):
-    join_room, code_change, cursor_move, chat_message, language_change,
-    file_change, delete_file, camera_toggle, mic_toggle,
-    run_code, terminal_input,
-    webrtc_offer, webrtc_answer, webrtc_ice
+  RoomPage — Main room view with WebRTC, terminal I/O, resizable panels, files,
+  and role-based access control (Admin/Deputy Admin/Editor/Reviewer/Viewer).
 */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { socket, BACKEND_URL } from '../socket';
+import { socket } from '../socket';
 import EditorPanel from './EditorPanel';
 import TerminalPanel from './TerminalPanel';
 import UsersPanel from './UsersPanel';
@@ -34,17 +28,20 @@ function copyToClipboard(text) {
   finally { document.body.removeChild(ta); }
 }
 
-/* ---------- unique session ID per tab (not persisted) ---------- */
 const SESSION_ID = crypto.randomUUID ? crypto.randomUUID() : `s-${Math.random().toString(36).slice(2)}`;
-
-/* ---------- WebRTC config ---------- */
 const ICE_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-function RoomPage({ userId }) {
+// Role permission helpers for frontend UI state
+const canWrite = (role) => ['admin', 'deputy_admin', 'editor'].includes(role);
+const canApprove = (role) => ['admin', 'deputy_admin', 'reviewer'].includes(role);
+
+function RoomPage({ userId, currentUser, onLogout }) {
   const { roomId } = useParams();
   const navigate = useNavigate();
 
-  const nickname = sessionStorage.getItem('codesync_nickname') || 'Anonymous';
+  // We rely on the logged-in user context
+  const nickname = currentUser?.username || 'Anonymous';
+  const dbUserId = currentUser?.id;
   const roomPassword = sessionStorage.getItem(`codesync_password_${roomId}`) || '';
 
   /* ---- state ---- */
@@ -60,7 +57,12 @@ function RoomPage({ userId }) {
   const [cursorColor, setCursorColor] = useState('#89b4fa');
   const [connected, setConnected] = useState(socket.connected);
   const [joinError, setJoinError] = useState('');
+  const [joinPending, setJoinPending] = useState(''); // waiting for approval message
   const [displayNickname, setDisplayNickname] = useState(nickname);
+  const [myRole, setMyRole] = useState('viewer'); // default role
+
+  // Join approval state (for admins)
+  const [pendingRequests, setPendingRequests] = useState([]);
 
   /* ---- refs ---- */
   const lastRemoteCodeRef = useRef(null);
@@ -68,11 +70,11 @@ function RoomPage({ userId }) {
   const hasJoinedRef = useRef(false);
   const peerConnectionsRef = useRef({});  // sid → RTCPeerConnection
   const localStreamRef = useRef(null);
-  const remoteStreamsRef = useRef({});     // userId → MediaStream
-  const sidToUserIdRef = useRef({});       // socketSid → userId (for WebRTC stream lookup)
-  const [remoteStreams, setRemoteStreams] = useState({}); // userId → MediaStream, for re-renders
+  const remoteStreamsRef = useRef({});    // userId → MediaStream
+  const sidToUserIdRef = useRef({});      // socketSid → userId
+  const [remoteStreams, setRemoteStreams] = useState({});
 
-  /* ---- resizable panel sizes ---- */
+  /* ---- panel sizes ---- */
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [usersPanelHeight, setUsersPanelHeight] = useState(250);
@@ -81,12 +83,13 @@ function RoomPage({ userId }) {
   const addNotification = useCallback((text) => {
     const id = ++notifIdRef.current;
     setNotifications(prev => [...prev, { id, text }]);
-    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 3000);
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 5000);
   }, []);
 
   /* ========== WebRTC helpers ========== */
   const createPeerConnection = useCallback((remoteSid) => {
     if (peerConnectionsRef.current[remoteSid]) return peerConnectionsRef.current[remoteSid];
+    console.log('[WebRTC] Creating RTCPeerConnection for', remoteSid);
     const pc = new RTCPeerConnection(ICE_CONFIG);
 
     pc.onicecandidate = (e) => {
@@ -95,11 +98,13 @@ function RoomPage({ userId }) {
       }
     };
 
+    // FIX: Verify streams array
     pc.ontrack = (e) => {
-      const stream = e.streams[0];
-      if (stream) {
-        // Key by userId so UsersPanel can look up by user.userId
+      console.log('[WebRTC] ontrack fired from', remoteSid);
+      if (e.streams && e.streams[0]) {
+        const stream = e.streams[0];
         const remoteUserId = sidToUserIdRef.current[remoteSid] || remoteSid;
+        console.log('[WebRTC] Adding remote stream for userId:', remoteUserId);
         remoteStreamsRef.current[remoteUserId] = stream;
         setRemoteStreams(prev => ({ ...prev, [remoteUserId]: stream }));
       }
@@ -107,6 +112,7 @@ function RoomPage({ userId }) {
 
     pc.onnegotiationneeded = async () => {
       try {
+        console.log('[WebRTC] Creating offer for', remoteSid);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit('webrtc_offer', {
@@ -116,12 +122,13 @@ function RoomPage({ userId }) {
           fromNickname: displayNickname,
         });
       } catch (err) {
-        console.error('WebRTC negotiation error:', err);
+        console.error('[WebRTC] Negotiation error:', err);
       }
     };
 
-    // Add local tracks if we have a stream
+    // FIX: Add tracks BEFORE creating offer
     if (localStreamRef.current) {
+      console.log('[WebRTC] Adding local tracks to PC for', remoteSid);
       localStreamRef.current.getTracks().forEach(t => pc.addTrack(t, localStreamRef.current));
     }
 
@@ -132,6 +139,7 @@ function RoomPage({ userId }) {
   const cleanupPeerConnection = useCallback((remoteSid) => {
     const pc = peerConnectionsRef.current[remoteSid];
     if (pc) {
+      console.log('[WebRTC] Closing PC for', remoteSid);
       pc.close();
       delete peerConnectionsRef.current[remoteSid];
     }
@@ -164,6 +172,8 @@ function RoomPage({ userId }) {
     };
 
     const handleRoomJoined = (data) => {
+      setJoinPending('');
+      setJoinError('');
       setFiles(data.files || { 'main.py': '' });
       setActiveFile(data.activeFile || 'main.py');
       setLanguage(data.language || 'python');
@@ -171,15 +181,54 @@ function RoomPage({ userId }) {
       setChatMessages(data.chat || []);
       setCursorColor(data.cursorColor || '#89b4fa');
       if (data.nickname) setDisplayNickname(data.nickname);
-
-      // Initiate WebRTC with all existing users (they have sids in socket.id form)
-      // We'll get their sids from user_joined events
+      if (data.role) setMyRole(data.role);
     };
 
     const handleJoinError = (data) => {
       setJoinError(data.message || 'Could not join room.');
     };
 
+    const handleJoinPending = (data) => {
+      setJoinPending(data.message || 'Waiting for admin approval...');
+    };
+
+    // --- Admin role approvals ---
+    const handlePendingJoinRequest = (data) => {
+      setPendingRequests(prev => [...prev, data]);
+      addNotification(`${data.username} wants to join the room.`);
+    };
+
+    const handleJoinApproved = (data) => {
+      if (data.dbUserId === dbUserId) {
+        // We were approved! Rejoin to get room state
+        hasJoinedRef.current = false;
+        handleConnect();
+      } else {
+        addNotification(`${data.username} was approved to join.`);
+      }
+    };
+
+    const handleJoinRejected = (data) => {
+      if (data.dbUserId === dbUserId) {
+        setJoinPending('');
+        setJoinError('Your request to join was rejected by the admin.');
+      }
+    };
+
+    const handleRoleChanged = (data) => {
+      setUsers(data.users || []);
+      if (data.dbUserId === dbUserId) {
+        setMyRole(data.newRole);
+        addNotification(`Your role was changed to ${data.newRole}`);
+      }
+    };
+
+    const handleUserKicked = (data) => {
+      addNotification('You were kicked from the room.');
+      navigate('/');
+    };
+
+    // --- Standard room events ---
     const handleCodeUpdate = (data) => {
       const filename = data.filename || activeFile;
       lastRemoteCodeRef.current = `${filename}::${data.code}`;
@@ -199,13 +248,12 @@ function RoomPage({ userId }) {
     const handleUserLeft = (data) => {
       setUsers(data.users || []);
       setRemoteCursors(prev => { const n = { ...prev }; delete n[data.userId]; return n; });
-      addNotification(`${data.nickname} left the room`);
-      // Cleanup WebRTC for departed user
-      if (data.sessionId) {
-        Object.keys(peerConnectionsRef.current).forEach(sid => {
-          cleanupPeerConnection(sid);
-        });
+      if (data.kicked) {
+        addNotification(`${data.nickname} was kicked from the room.`);
+      } else {
+        addNotification(`${data.nickname} left the room`);
       }
+      if (data.sessionId) Object.keys(peerConnectionsRef.current).forEach(sid => cleanupPeerConnection(sid));
     };
 
     const handleChatMessage = (msg) => setChatMessages(prev => [...prev, msg]);
@@ -217,7 +265,6 @@ function RoomPage({ userId }) {
     };
 
     const handleFileDeleted = (data) => {
-      // Use server's authoritative file list to rebuild state
       setFiles(prev => {
         const next = {};
         (data.files || []).forEach(f => { next[f] = prev[f] ?? ''; });
@@ -230,58 +277,51 @@ function RoomPage({ userId }) {
     const handleMicToggle = (data) => setUsers(data.users || []);
 
     const handleTerminalOutput = (data) => {
-      if (data.output) {
-        setTerminalLines(prev => [...prev, { type: 'output', text: data.output }]);
-      }
-      if (data.done) {
-        setIsRunning(false);
-      }
+      if (data.output) setTerminalLines(prev => [...prev, { type: 'output', text: data.output }]);
+      if (data.done) setIsRunning(false);
     };
 
-    /* WebRTC signaling handlers */
+    // --- WebRTC ---
     const handleWebrtcOffer = async (data) => {
-      // Map socket sid → userId so ontrack can key remoteStreams by userId
-      if (data.fromUserId) {
-        sidToUserIdRef.current[data.fromSid] = data.fromUserId;
-      }
+      console.log('[WebRTC] Received offer from', data.fromSid);
+      if (data.fromUserId) sidToUserIdRef.current[data.fromSid] = data.fromUserId;
       const pc = createPeerConnection(data.fromSid);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('webrtc_answer', { targetSid: data.fromSid, answer: pc.localDescription });
-      } catch (err) {
-        console.error('Error handling WebRTC offer:', err);
-      }
+      } catch (err) { console.error('[WebRTC] Err handling offer:', err); }
     };
 
     const handleWebrtcAnswer = async (data) => {
+      console.log('[WebRTC] Received answer from', data.fromSid);
       const pc = peerConnectionsRef.current[data.fromSid];
       if (pc) {
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-        } catch (err) {
-          console.error('Error handling WebRTC answer:', err);
-        }
+        try { await pc.setRemoteDescription(new RTCSessionDescription(data.answer)); }
+        catch (err) { console.error('[WebRTC] Err handling answer:', err); }
       }
     };
 
     const handleWebrtcIce = async (data) => {
       const pc = peerConnectionsRef.current[data.fromSid];
       if (pc && data.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        } catch (err) {
-          console.error('Error adding ICE candidate:', err);
-        }
+        try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+        catch (err) { console.error('[WebRTC] Err adding ICE:', err); }
       }
     };
 
-    /* Register all handlers */
+    /* Register handlers */
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('room_joined', handleRoomJoined);
     socket.on('join_error', handleJoinError);
+    socket.on('join_pending', handleJoinPending);
+    socket.on('pending_join_request', handlePendingJoinRequest);
+    socket.on('join_approved', handleJoinApproved);
+    socket.on('join_rejected', handleJoinRejected);
+    socket.on('role_changed', handleRoleChanged);
+    socket.on('user_kicked', handleUserKicked);
     socket.on('code_update', handleCodeUpdate);
     socket.on('cursor_update', handleCursorUpdate);
     socket.on('user_joined', handleUserJoined);
@@ -304,6 +344,12 @@ function RoomPage({ userId }) {
       socket.off('disconnect', handleDisconnect);
       socket.off('room_joined', handleRoomJoined);
       socket.off('join_error', handleJoinError);
+      socket.off('join_pending', handleJoinPending);
+      socket.off('pending_join_request', handlePendingJoinRequest);
+      socket.off('join_approved', handleJoinApproved);
+      socket.off('join_rejected', handleJoinRejected);
+      socket.off('role_changed', handleRoleChanged);
+      socket.off('user_kicked', handleUserKicked);
       socket.off('code_update', handleCodeUpdate);
       socket.off('cursor_update', handleCursorUpdate);
       socket.off('user_joined', handleUserJoined);
@@ -318,14 +364,34 @@ function RoomPage({ userId }) {
       socket.off('webrtc_offer', handleWebrtcOffer);
       socket.off('webrtc_answer', handleWebrtcAnswer);
       socket.off('webrtc_ice', handleWebrtcIce);
-      // Cleanup all peer connections on unmount
       Object.keys(peerConnectionsRef.current).forEach(sid => cleanupPeerConnection(sid));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, nickname, userId, roomPassword, addNotification, createPeerConnection, cleanupPeerConnection]);
+  }, [roomId, nickname, userId, dbUserId, roomPassword, addNotification, createPeerConnection, cleanupPeerConnection, navigate]);
 
-  /* ========== Handlers ========== */
+
+  /* ========== Action Handlers ========== */
+  const handleApproveRequest = (dbUserIdToApprove, username, role) => {
+    socket.emit('approve_join', { roomCode: roomId, dbUserId: dbUserIdToApprove, role });
+    setPendingRequests(prev => prev.filter(req => req.dbUserId !== dbUserIdToApprove));
+  };
+
+  const handleRejectRequest = (dbUserIdToReject) => {
+    socket.emit('reject_join', { roomCode: roomId, dbUserId: dbUserIdToReject });
+    setPendingRequests(prev => prev.filter(req => req.dbUserId !== dbUserIdToReject));
+  };
+
+  const handleChangeRole = (targetDbUserId, newRole) => {
+    socket.emit('change_role', { roomCode: roomId, dbUserId: targetDbUserId, role: newRole });
+  };
+
+  const handleKickUser = (targetDbUserId) => {
+    if (window.confirm('Are you sure you want to kick this user?')) {
+      socket.emit('kick_user', { roomCode: roomId, dbUserId: targetDbUserId });
+    }
+  };
+
   const handleCodeChange = (value) => {
+    if (!canWrite(myRole)) return; // read-only protection
     const next = value || '';
     const key = `${activeFile}::${next}`;
     if (lastRemoteCodeRef.current === key) {
@@ -345,29 +411,20 @@ function RoomPage({ userId }) {
   };
 
   const handleLanguageChange = (lang) => {
+    if (!canWrite(myRole)) return;
     setLanguage(lang);
     socket.emit('language_change', { room: roomId, language: lang });
   };
 
   const handleRunCode = () => {
-    // Route through socket so the process is interactive (stdin works)
     const code = files[activeFile] || '';
     setIsRunning(true);
     setTerminalLines(prev => [...prev, { type: 'status', text: '$ Running...' }]);
     socket.emit('run_code', { room: roomId, code, language });
   };
 
-  const handleRunCommand = (code) => {
-    setIsRunning(true);
-    setTerminalLines(prev => [...prev, { type: 'input', text: code }]);
-    socket.emit('run_code', { room: roomId, code, language });
-  };
-
   const handleTerminalInput = (text) => {
-    // Echo the input into terminal lines so user sees what they typed
-    if (text && text !== '\x03') {
-      setTerminalLines(prev => [...prev, { type: 'input', text }]);
-    }
+    if (text && text !== '\x03') setTerminalLines(prev => [...prev, { type: 'input', text }]);
     socket.emit('terminal_input', { text: text + '\n' });
   };
 
@@ -381,6 +438,7 @@ function RoomPage({ userId }) {
   };
 
   const handleCreateFile = (filename) => {
+    if (!canWrite(myRole)) return;
     const ext = filename.split('.').pop();
     const defaults = { py: '# New file\n', js: '// New file\n', cpp: '#include <iostream>\nusing namespace std;\n\nint main() {\n    \n    return 0;\n}\n', java: 'public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n' };
     const content = defaults[ext] || '';
@@ -390,28 +448,27 @@ function RoomPage({ userId }) {
   };
 
   const handleDeleteFile = (filename) => {
+    if (!canWrite(myRole)) return;
     socket.emit('delete_file', { room: roomId, filename });
   };
 
   const handleCameraToggle = (enabled) => {
-    // Bug 1 fix: update local users state immediately (backend uses include_self=False)
     setUsers(prev => prev.map(u => u.userId === userId ? { ...u, cameraEnabled: enabled } : u));
     socket.emit('camera_toggle', { room: roomId, userId, enabled });
   };
 
   const handleMicToggle = (enabled) => {
-    // Bug 1 fix: update local users state immediately (backend uses include_self=False)
     setUsers(prev => prev.map(u => u.userId === userId ? { ...u, micEnabled: enabled } : u));
     socket.emit('mic_toggle', { room: roomId, userId, enabled });
   };
 
   const handleLocalStream = useCallback((stream) => {
+    console.log('[WebRTC] Storing local stream with tracks:', stream.getTracks().length);
     localStreamRef.current = stream;
-    // Add tracks to all existing peer connections
     Object.values(peerConnectionsRef.current).forEach(pc => {
       const existingSenders = pc.getSenders();
       stream.getTracks().forEach(track => {
-        const existing = existingSenders.find(s => s.track?.kind === track.kind);
+        const existing = existingSenders.find(s => s.track && s.track.kind === track.kind);
         if (existing) {
           existing.replaceTrack(track);
         } else {
@@ -429,7 +486,6 @@ function RoomPage({ userId }) {
 
   const handleLeaveRoom = () => {
     hasJoinedRef.current = false;
-    // Cleanup all peer connections
     Object.keys(peerConnectionsRef.current).forEach(sid => cleanupPeerConnection(sid));
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop());
@@ -438,20 +494,16 @@ function RoomPage({ userId }) {
     navigate('/');
   };
 
-  const handleClearTerminal = () => setTerminalLines([]);
 
   /* ========== Resizer drag handlers ========== */
+  // ... (keeping resize logic exactly the same)
   const handleTerminalResize = useCallback((e) => {
     e.preventDefault();
     const startY = e.clientY;
     const startH = terminalHeight;
-    const onMove = (ev) => {
-      const delta = startY - ev.clientY;
-      setTerminalHeight(Math.max(80, Math.min(startH + delta, window.innerHeight - 200)));
-    };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    const onMove = (ev) => setTerminalHeight(Math.max(80, Math.min(startH + startY - ev.clientY, window.innerHeight - 200)));
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; };
     document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [terminalHeight]);
@@ -460,13 +512,9 @@ function RoomPage({ userId }) {
     e.preventDefault();
     const startX = e.clientX;
     const startW = sidebarWidth;
-    const onMove = (ev) => {
-      const delta = startX - ev.clientX;
-      setSidebarWidth(Math.max(200, Math.min(startW + delta, 600)));
-    };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    const onMove = (ev) => setSidebarWidth(Math.max(200, Math.min(startW + startX - ev.clientX, 600)));
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; };
     document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [sidebarWidth]);
@@ -475,16 +523,13 @@ function RoomPage({ userId }) {
     e.preventDefault();
     const startY = e.clientY;
     const startH = usersPanelHeight;
-    const onMove = (ev) => {
-      const delta = ev.clientY - startY;
-      setUsersPanelHeight(Math.max(80, Math.min(startH + delta, 500)));
-    };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    const onMove = (ev) => setUsersPanelHeight(Math.max(80, Math.min(startH + ev.clientY - startY, 500)));
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; };
     document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [usersPanelHeight]);
+
 
   /* ========== Render ========== */
   if (joinError) {
@@ -492,13 +537,27 @@ function RoomPage({ userId }) {
       <div className="join-error-page">
         <div className="join-error-card">
           <div className="join-error-icon">⚠️</div>
-          <h2>Cannot Join Room</h2>
+          <h2>Access Denied</h2>
           <p>{joinError}</p>
           <button className="btn btn-primary" onClick={() => navigate('/')}>Back to Home</button>
         </div>
       </div>
     );
   }
+
+  if (joinPending) {
+    return (
+      <div className="join-error-page">
+        <div className="join-error-card">
+          <div className="auth-loading-spinner" style={{ marginBottom: '1rem', width: '40px', height: '40px' }} />
+          <h2>Joining Room...</h2>
+          <p>{joinPending}</p>
+          <button className="btn btn-ghost" style={{ marginTop: '1rem' }} onClick={() => navigate('/')}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
 
   return (
     <div className="room-page">
@@ -508,6 +567,42 @@ function RoomPage({ userId }) {
           <div key={n.id} className="notification">{n.text}</div>
         ))}
       </div>
+
+      {/* Admin Pending Join Requests Modal/Overlay */}
+      {pendingRequests.length > 0 && ['admin', 'deputy_admin'].includes(myRole) && (
+        <div className="admin-approval-overlay">
+          {pendingRequests.map(req => (
+            <div key={req.dbUserId} className="admin-approval-card">
+              <h4>Join Request</h4>
+              <p><strong>{req.username}</strong> wants to join the room.</p>
+              <div className="admin-approval-actions">
+                <select id={`role-select-${req.dbUserId}`} defaultValue="viewer" className="input-field" style={{ padding: '4px', width: 'auto' }}>
+                  <option value="deputy_admin">⭐ Deputy Admin</option>
+                  <option value="editor">✏️ Editor</option>
+                  <option value="reviewer">🔍 Reviewer</option>
+                  <option value="viewer">👁️ Viewer</option>
+                </select>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    const sel = document.getElementById(`role-select-${req.dbUserId}`);
+                    handleApproveRequest(req.dbUserId, req.username, sel.value);
+                  }}
+                >
+                  Approve
+                </button>
+                <button
+                  className="btn btn-sm"
+                  style={{ background: 'rgba(243,139,168,.15)', color: 'var(--red)' }}
+                  onClick={() => handleRejectRequest(req.dbUserId)}
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Header */}
       <header className="room-header">
@@ -522,12 +617,12 @@ function RoomPage({ userId }) {
           </div>
         </div>
         <div className="room-header-right">
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{displayNickname}</span>
           <span className={`connection-status ${connected ? 'connected' : 'disconnected'}`}>
             <span className="status-dot" />
             {connected ? 'Connected' : 'Reconnecting…'}
           </span>
-          <span className="user-count-badge">{users.length} online</span>
-          <button className="btn btn-ghost btn-sm" onClick={handleLeaveRoom}>Leave Room</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleLeaveRoom}>Leave</button>
         </div>
       </header>
 
@@ -539,32 +634,41 @@ function RoomPage({ userId }) {
           onSwitch={handleSwitchFile}
           onCreate={handleCreateFile}
           onDelete={handleDeleteFile}
+          readOnly={!canWrite(myRole)}
         />
         <div className="room-left">
-          <EditorPanel
-            code={files[activeFile] || ''}
-            language={language}
-            activeFile={activeFile}
-            remoteCursors={Object.values(remoteCursors)}
-            onCodeChange={handleCodeChange}
-            onCursorMove={handleCursorMove}
-            onLanguageChange={handleLanguageChange}
-            onRun={handleRunCode}
-            isRunning={isRunning}
-          />
-          {/* Horizontal resizer between editor and terminal */}
+          {/* We pass readOnly state to EditorPanel via pointerEvents or monaco options */}
+          <div className="editor-wrapper" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, opacity: canWrite(myRole) ? 1 : 0.8 }}>
+            {!canWrite(myRole) && (
+              <div className="readonly-banner">
+                You are in Read-Only mode ({myRole === 'viewer' ? 'Viewer' : 'Reviewer'}). Your changes will not be saved.
+              </div>
+            )}
+            <EditorPanel
+              code={files[activeFile] || ''}
+              language={language}
+              activeFile={activeFile}
+              remoteCursors={Object.values(remoteCursors)}
+              onCodeChange={handleCodeChange}
+              onCursorMove={handleCursorMove}
+              onLanguageChange={handleLanguageChange}
+              onRun={handleRunCode}
+              isRunning={isRunning}
+              readOnly={!canWrite(myRole)}
+            />
+          </div>
+
           <div className="resizer resizer-horizontal" onMouseDown={handleTerminalResize} />
           <TerminalPanel
             lines={terminalLines}
             isRunning={isRunning}
-            onRunCommand={handleRunCommand}
+            onRunCommand={() => {}} 
             onTerminalInput={handleTerminalInput}
-            onClear={handleClearTerminal}
+            onClear={() => setTerminalLines([])}
             height={terminalHeight}
           />
         </div>
 
-        {/* Vertical resizer between left and right panels */}
         <div className="resizer resizer-vertical" onMouseDown={handleSidebarResize} />
 
         <div className="room-right" style={{ width: sidebarWidth, minWidth: 200, maxWidth: 600 }}>
@@ -576,8 +680,10 @@ function RoomPage({ userId }) {
             onLocalStream={handleLocalStream}
             remoteStreams={remoteStreams}
             height={usersPanelHeight}
+            myRole={myRole}
+            onChangeRole={handleChangeRole}
+            onKickUser={handleKickUser}
           />
-          {/* Horizontal resizer between users and chat */}
           <div className="resizer resizer-horizontal" onMouseDown={handleUsersChatResize} />
           <ChatPanel messages={chatMessages} onSend={handleSendChat} currentUserId={userId} />
         </div>

@@ -29,7 +29,7 @@ function displayName(filename) {
 
 function EditorPanel({
   code, language, activeFile, remoteCursors, onCodeChange,
-  onCursorMove, onLanguageChange, onRun, isRunning,
+  onCursorMove, onLanguageChange, onRun, isRunning, readOnly,
 }) {
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
@@ -102,6 +102,7 @@ function EditorPanel({
           onChange={onCodeChange}
           onMount={handleMount}
           options={{
+            readOnly: readOnly,
             fontFamily: "'JetBrains Mono','Fira Code','Cascadia Code',monospace",
             fontSize: 14, lineHeight: 22,
             minimap: { enabled: false },

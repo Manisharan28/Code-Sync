@@ -408,3 +408,371 @@
   .landing-title { font-size: 2.2rem; }
   .resizer-vertical { height: 4px; width: 100%; cursor: row-resize; }
 }
+
+/* ========================================================================= */
+/* AUTH PAGES (Login / Signup) */
+/* ========================================================================= */
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg-base);
+  padding: 2rem;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 2.5rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+  color: var(--blue);
+}
+
+.auth-logo-icon {
+  fill: none;
+  stroke: currentColor;
+}
+
+.auth-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+.auth-heading {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: var(--text);
+}
+
+.auth-subtitle {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  margin: 0 0 2rem 0;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.auth-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.auth-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.95rem;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.auth-input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+}
+
+.auth-input-error {
+  border-color: var(--red);
+}
+
+.auth-input-error:focus {
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px rgba(243, 139, 168, 0.2);
+}
+
+.auth-field-error {
+  color: var(--red);
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.auth-password-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.auth-eye-btn {
+  position: absolute;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0;
+}
+
+.auth-eye-btn:hover {
+  color: var(--text);
+}
+
+.auth-submit-btn {
+  background: var(--blue);
+  color: var(--bg-base);
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.875rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.auth-submit-btn:hover:not(:disabled) {
+  background: #74c7ec;
+  transform: translateY(-1px);
+}
+
+.auth-submit-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.auth-error {
+  background: rgba(243, 139, 168, 0.1);
+  color: var(--red);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid rgba(243, 139, 168, 0.2);
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.auth-success {
+  background: rgba(166, 227, 161, 0.1);
+  color: var(--green);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid rgba(166, 227, 161, 0.2);
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.auth-switch {
+  margin-top: 2rem;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.auth-link {
+  color: var(--blue);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.auth-link:hover {
+  text-decoration: underline;
+}
+
+.auth-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg-base);
+  color: var(--text-dim);
+  gap: 1rem;
+}
+
+.auth-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.fade-in {
+  animation: fadeIn 0.4s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ========================================================================= */
+/* ROLE SYSTEM & ADMIN UI */
+/* ========================================================================= */
+
+.my-role-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.user-role-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(0,0,0,0.2);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  margin-left: 0.5rem;
+}
+
+.admin-controls {
+  display: flex;
+  gap: 0.25rem;
+  position: relative;
+}
+
+.kick-btn:hover {
+  color: var(--red);
+  background: rgba(243, 139, 168, 0.1);
+}
+
+.role-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 0.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 100;
+  width: max-content;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+.role-option {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+}
+
+.role-option:hover {
+  background: var(--bg-overlay);
+}
+
+.role-option.active {
+  background: rgba(137, 180, 250, 0.1);
+  color: var(--blue);
+}
+
+.admin-approval-overlay {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 1000;
+}
+
+.admin-approval-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--blue);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  padding: 1.25rem;
+  border-radius: var(--radius-lg);
+  width: 320px;
+  animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.admin-approval-card h4 {
+  margin: 0 0 0.5rem 0;
+  color: var(--blue);
+}
+
+.admin-approval-card p {
+  margin: 0 0 1rem 0;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+}
+
+.admin-approval-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.admin-approval-actions select {
+  flex: 1;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.readonly-banner {
+  background: rgba(249, 226, 175, 0.1);
+  border-bottom: 1px solid rgba(249, 226, 175, 0.2);
+  color: var(--yellow);
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
